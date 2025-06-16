@@ -235,6 +235,90 @@ def add_attribute(node, attr, config):
         print(f"属性 {attr} 已存在，跳过添加。")
 
 
+def create_controller_hierarchy(ctrls):
+    """
+    为指定的控制器创建层次结构
+
+    参数:
+        ctrls (str|list): 单个控制器名称或控制器名称列表
+    """
+    # 处理输入参数
+    if isinstance(ctrls, str):
+        ctrls = [ctrls]  # 转换为列表
+
+    for ctrl in ctrls:
+        # 验证控制器是否存在
+        if not cmds.objExists(ctrl):
+            cmds.warning(f"控制器不存在: {ctrl}")
+            continue
+
+        # 命名解析
+        name_parts = ctrl.split('_')
+        if len(name_parts) < 3:
+            cmds.warning(f"控制器命名不规范，需要prefix_side_name格式: {ctrl}")
+            continue
+
+        # 获取控制器方向 (l/m/r)
+        side = name_parts[1]
+
+        # 按新方式获取颜色配置
+        try:
+            # 直接从CTRL_INFO获取颜色配置
+            ctrl_color_idx, sub_color_idx = CTRL_INFO['color'][side]
+        except KeyError:
+            # 默认使用中间配置
+            ctrl_color_idx, sub_color_idx = CTRL_INFO['color']['m']
+            cmds.warning(f"未找到{side}的颜色配置，使用默认中间配置")
+
+        # 创建层级结构
+        zero = cmds.createNode('transform', name=ctrl.replace('ctrl_', 'zero_'))
+        driven = cmds.createNode('transform', name=ctrl.replace('ctrl_', 'driven_'), parent=zero)
+        connect = cmds.createNode('transform', name=ctrl.replace('ctrl_', 'connect_'), parent=driven)
+        offset = cmds.createNode('transform', name=ctrl.replace('ctrl_', 'offset_'), parent=connect)
+
+        # 对齐控制器位置
+        cmds.matchTransform(zero, ctrl, position=True, rotation=True)
+        cmds.parent(ctrl, offset)
+
+        # 应用变换
+        cmds.makeIdentity(ctrl, apply=True, scale=True)
+        cmds.delete(ctrl, constructionHistory=True)
+
+        # 创建子控制器
+        sub = cmds.duplicate(ctrl, name=ctrl.replace(name_parts[2], name_parts[2] + 'Sub'))[0]
+        cmds.parent(sub, ctrl)
+        cmds.setAttr(f"{sub}.scale", 0.9, 0.9, 0.9)
+        cmds.makeIdentity(sub, apply=True, scale=True)
+
+        # 创建输出节点
+        output = cmds.createNode('transform', name=ctrl.replace('ctrl_', 'output_'), parent=ctrl)
+
+        # 连接属性
+        for attr in ['translate', 'rotate', 'rotateOrder']:
+            cmds.connectAttr(f"{sub}.{attr}", f"{output}.{attr}")
+
+        # 显示旋转顺序
+        for node in [ctrl, sub]:
+            cmds.setAttr(f"{node}.rotateOrder", channelBox=True)
+
+        # 添加可见性控制
+        cmds.addAttr(ctrl, longName='subCtrlVis', attributeType='bool')
+        cmds.setAttr(f"{ctrl}.subCtrlVis", channelBox=True)
+        cmds.connectAttr(f"{ctrl}.subCtrlVis", f"{sub}.visibility")
+
+        # 锁定无用属性
+        lock_attrs = ['scaleX', 'scaleY', 'scaleZ', 'visibility']
+        for node in [ctrl, sub]:
+            for attr in lock_attrs:
+                cmds.setAttr(f"{node}.{attr}", keyable=False, channelBox=False, lock=True)
+
+        # 设置颜色 (使用新的颜色配置方式)
+        for node, color_idx in zip([ctrl, sub], [ctrl_color_idx, sub_color_idx]):
+            shapes = cmds.listRelatives(node, shapes=True) or []
+            for shape in shapes:
+                cmds.setAttr(f"{shape}.overrideEnabled", 1)
+                cmds.setAttr(f"{shape}.overrideColor", color_idx)
+
 def scale_controller_shape(ctrl, scale_factor):
     """
     放大控制器的形状点，而不改变其 scale 属性
@@ -344,7 +428,7 @@ def set_controller_color(ctrl_shape, sub_ctrl_shape=None, side='l'):
 
 
 def create_control(description, side='m', index=1, pos=None, parent=None, lock_hide=None, rotate_order=0,
-                   shape='square', size=1, match_type=None, match_target=None, scale_factor=1.0):
+                   shape=None, size=1, match_type=None, match_target=None, scale_factor=1.0):
     """
     创建控制器
 
@@ -760,19 +844,20 @@ def create_hand_ik_system(
     scale_controller_shape('cube1', 10)
 
     # 7. 组织手部控制器层级
-    zero_hand = f"zero_{side}_handIk_001"
-    cmds.group(em=True, name=zero_hand)
-    cmds.matchTransform(zero_hand, f"ctrl_{side}_handIk_001", position=True, rotation=True)
-    cmds.parent(f"ctrl_{side}_handIk_001", zero_hand)
+    # zero_hand = f"zero_{side}_handIk_001"
+    # cmds.group(em=True, name=zero_hand)
+    # cmds.matchTransform(zero_hand, f"ctrl_{side}_handIk_001", position=True, rotation=True)
+    # cmds.parent(f"ctrl_{side}_handIk_001", zero_hand)
 
     # 8. 添加形状到控制器
     cmds.parent('curveShape1', f"ctrl_{side}_handIk_001", shape=True, add=True)
     cmds.rename("curveShape1", f"ctrl_{side}_handIk_001Shape")
     cmds.setAttr(f"ctrl_{side}_handIk_001.drawStyle", 2)
     cmds.delete("cube1")
+    create_controller_hierarchy(f"ctrl_{side}_handIk_001")
 
     # 9. 将手臂IK手柄父级到手部控制器
-    cmds.parent(arm_ik_handle, f"ctrl_{side}_handIk_001")
+    cmds.parent(arm_ik_handle, f"output_{side}_handIk_001")
 
     # 10. 创建手部IK
     hand_ik_handle, _ = cmds.ikHandle(
@@ -784,7 +869,7 @@ def create_hand_ik_system(
     )
 
     # 11. 将手部IK父级到手部控制器
-    cmds.parent(hand_ik_handle, f"ctrl_{side}_handIk_001")
+    cmds.parent(hand_ik_handle, f"output_{side}_handIk_001")
 
     # 12. 创建肘部连接线
     source_obj = f"ctrl_{side}_elbowIkGuide_001"
@@ -898,19 +983,13 @@ def create_leg_ik_system(
     # 6. 创建脚踝控制器形状
     create_curve('cube1', 'ankle')
 
-    # 7. 组织脚踝控制器层级
-    zero_ankle = f"zero_{side}_ankleIk_001"
-    cmds.group(em=True, name=zero_ankle)
-    cmds.matchTransform(zero_ankle, f"ctrl_{side}_ankleIk_001", position=True, rotation=True)
-    cmds.parent(f"ctrl_{side}_ankleIk_001", zero_ankle)
-
     # 8. 添加形状到控制器
     cmds.parent('curveShape1', f"ctrl_{side}_ankleIk_001", shape=True, add=True)
     cmds.rename("curveShape1", f"ctrl_{side}_ankleIk_001Shape")
     cmds.setAttr(f"ctrl_{side}_ankleIk_001.drawStyle", 2)
     cmds.delete("cube1")
-    cmds.parent(leg_ik_handle, f"ctrl_{side}_ankleIk_001")
-    set_controller_color(f"ctrl_{side}_ankleIk_001", side=side)
+    create_controller_hierarchy(f"ctrl_{side}_ankleIk_001")
+
 
     # 10. 创建脚踝IK
     ball_ik_handle, _ = cmds.ikHandle(
@@ -1620,8 +1699,6 @@ create_leg_ik_system(
     axis="-y"
 )
 
-set_controller_color('ctrl_l_handIk_001', side='l')
-set_controller_color('ctrl_r_handIk_001', side='r')
 
 # 创建ikFkBlend控制器
 for side, x_pos in [('l', 30), ('r', -30)]:
@@ -1721,12 +1798,6 @@ cmds.parent('crv_?_kneeIkGuide_001', 'output_m_cog_001')
 cmds.parent('zero_?_ankleIk_001', 'output_m_cog_001')
 cmds.parent('zero_?_armIkFkBlend_001', 'grp_m_chestCtrls_001')
 cmds.parent('zero_?_legIkFkBlend_001', 'output_m_cog_001')
-cmds.group(em=True, n='output_l_ankleIk_001')
-cmds.group(em=True, n='output_r_ankleIk_001')
-cmds.matchTransform('output_l_ankleIk_001', 'ctrl_l_ankleIk_001')
-cmds.matchTransform('output_r_ankleIk_001', 'ctrl_r_ankleIk_001')
-cmds.parent('output_l_ankleIk_001', 'ctrl_l_ankleIk_001')
-cmds.parent('output_r_ankleIk_001', 'ctrl_r_ankleIk_001')
 cmds.parent('zero_l_heelPivot_001', 'output_l_ankleIk_001')
 cmds.parent('zero_r_heelPivot_001', 'output_r_ankleIk_001')
 
