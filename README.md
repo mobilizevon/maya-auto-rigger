@@ -31,3 +31,5 @@ space_switch.py (空间切换):
 twist_joint.py (扭曲关节):
 
 为四肢（如前臂、上臂、大腿、小腿）添加扭曲关节，实现更自然的旋转变形。
+
+详见https://drive.google.com/file/d/1ihw0cqTjXG1QmrBFiOH4zioOy30CWd_j/view?usp=sharing
